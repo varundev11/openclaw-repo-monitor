@@ -4,9 +4,7 @@ import asyncio
 from collector import MonitorCollector
 
 async def main():
-    SNAP_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'snapshots')
-    os.makedirs(SNAP_DIR, exist_ok=True)
-    c = MonitorCollector(snapshot_dir=SNAP_DIR)
+    c = MonitorCollector()
     await c.collect_and_prune()
 
 if __name__ == '__main__':

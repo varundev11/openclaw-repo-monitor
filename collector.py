@@ -5,21 +5,29 @@ from datetime import datetime
 from github import Github
 
 class MonitorCollector:
-    def __init__(self, snapshot_dir: str, owner: str = "openclaw", repo: str = "openclaw"):
-        self.snapshot_dir = snapshot_dir
+    def __init__(self, owner: str = "openclaw", repo: str = "openclaw"):
         self.owner = owner
         self.repo = repo
-        token = os.getenv("GITHUB_TOKEN")
-        if not token:
-            raise RuntimeError("GITHUB_TOKEN required in environment")
-        self.gh = Github(token)
+        token = os.getenv("GIST_TOKEN")
+        self.gh = Github(token) if token else Github()
+        self.gist_description = "openclaw-repo-monitor snapshots"
+        self.gist = self._get_or_create_gist()
         self._lock = asyncio.Lock()
 
-    def snapshot_path(self, ts: str) -> str:
-        return os.path.join(self.snapshot_dir, f"snapshot_{ts}.json")
+    def _get_or_create_gist(self):
+        token = os.getenv("GIST_TOKEN")
+        if not token:
+            raise RuntimeError("GIST_TOKEN required for creating/updating gists")
+        user = self.gh.get_user()
+        gists = user.get_gists()
+        for g in gists:
+            if g.description == self.gist_description:
+                return g
+        # create new secret gist
+        return user.create_gist(public=False, description=self.gist_description, files={})
 
     def list_snapshots(self):
-        files = [f for f in os.listdir(self.snapshot_dir) if f.startswith("snapshot_") and f.endswith('.json')]
+        files = [f for f in self.gist.files.keys() if f.startswith("snapshot_") and f.endswith(".json")]
         files.sort(reverse=True)
         return files
 
@@ -27,9 +35,8 @@ class MonitorCollector:
         files = self.list_snapshots()
         if not files:
             return None
-        path = os.path.join(self.snapshot_dir, files[0])
-        with open(path, 'r') as f:
-            return json.load(f)
+        content = self.gist.files[files[0]].content
+        return json.loads(content)
 
     async def schedule_loop(self, interval_minutes: int = 30):
         while True:
@@ -43,16 +50,21 @@ class MonitorCollector:
         async with self._lock:
             ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             snap = self.collect_snapshot()
-            path = self.snapshot_path(ts)
-            with open(path, 'w') as f:
-                json.dump(snap, f, indent=2)
-            # keep only latest 3
-            files = self.list_snapshots()
-            for old in files[3:]:
-                try:
-                    os.remove(os.path.join(self.snapshot_dir, old))
-                except Exception:
-                    pass
+            # update gist with new snapshot, keep latest 3
+            current_files = dict(self.gist.files)
+            new_filename = f"snapshot_{ts}.json"
+            new_files = {new_filename: {"content": json.dumps(snap, indent=2)}}
+            # add existing latest 2
+            existing_snapshots = sorted([f for f in current_files.keys() if f.startswith("snapshot_") and f.endswith(".json")], reverse=True)
+            for f in existing_snapshots[:2]:
+                new_files[f] = {"content": current_files[f].content}
+            self.gist.edit(files=new_files)
+
+    def get_snapshot_content(self, ts: str):
+        filename = f"snapshot_{ts}.json"
+        if filename not in self.gist.files:
+            return None
+        return self.gist.files[filename].content
 
     def collect_snapshot(self):
         repo = self.gh.get_repo(f"{self.owner}/{self.repo}")

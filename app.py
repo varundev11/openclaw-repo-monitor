@@ -3,13 +3,13 @@ import asyncio
 import json
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
+from dotenv import load_dotenv
 from collector import MonitorCollector
 
-SNAP_DIR = os.path.join(os.path.dirname(__file__), "snapshots")
-os.makedirs(SNAP_DIR, exist_ok=True)
+load_dotenv()
 
 app = FastAPI(title="openclaw-repo-monitor")
-collector = MonitorCollector(snapshot_dir=SNAP_DIR)
+collector = MonitorCollector()
 
 @app.on_event("startup")
 async def startup_event():
@@ -23,11 +23,10 @@ def list_snapshots():
 
 @app.get("/snapshots/{ts}")
 def get_snapshot(ts: str):
-    path = collector.snapshot_path(ts)
-    if not os.path.exists(path):
+    content = collector.get_snapshot_content(ts)
+    if not content:
         raise HTTPException(status_code=404, detail="snapshot not found")
-    with open(path, 'r') as f:
-        return json.load(f)
+    return json.loads(content)
 
 @app.get("/report/latest")
 def report_latest():
@@ -36,3 +35,11 @@ def report_latest():
         raise HTTPException(status_code=404, detail="no snapshots available")
     report = collector.summarize_snapshot(snap)
     return report
+
+@app.get("/wakeup")
+async def wakeup():
+    return {"status": "awake", "message": "This server is awake."}
+
+@app.head("/wakeup")
+async def wakeup_head():
+    return
