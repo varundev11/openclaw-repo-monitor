@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 from datetime import datetime
-from github import Github
+from github import Github, InputFileContent
 
 class MonitorCollector:
     def __init__(self, owner: str = "openclaw", repo: str = "openclaw"):
@@ -24,7 +24,11 @@ class MonitorCollector:
             if g.description == self.gist_description:
                 return g
         # create new secret gist
-        return user.create_gist(public=False, description=self.gist_description, files={})
+        return user.create_gist(
+            public=False, 
+            description=self.gist_description, 
+            files={"README.md": InputFileContent("Initial gist content for openclaw-repo-monitor snapshots")}
+        )
 
     def list_snapshots(self):
         files = [f for f in self.gist.files.keys() if f.startswith("snapshot_") and f.endswith(".json")]
@@ -53,11 +57,11 @@ class MonitorCollector:
             # update gist with new snapshot, keep latest 3
             current_files = dict(self.gist.files)
             new_filename = f"snapshot_{ts}.json"
-            new_files = {new_filename: {"content": json.dumps(snap, indent=2)}}
+            new_files = {new_filename: InputFileContent(json.dumps(snap, indent=2))}
             # add existing latest 2
             existing_snapshots = sorted([f for f in current_files.keys() if f.startswith("snapshot_") and f.endswith(".json")], reverse=True)
             for f in existing_snapshots[:2]:
-                new_files[f] = {"content": current_files[f].content}
+                new_files[f] = InputFileContent(current_files[f].content)
             self.gist.edit(files=new_files)
 
     def get_snapshot_content(self, ts: str):
