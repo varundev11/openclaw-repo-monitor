@@ -1,0 +1,10 @@
+import os
+from collector import MonitorCollector
+
+def test_missing_token(monkeypatch):
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    try:
+        MonitorCollector(snapshot_dir='/tmp')
+        assert False, "should have raised"
+    except RuntimeError:
+        assert True
