@@ -36,6 +36,11 @@ def report_latest():
     report = collector.summarize_snapshot(snap)
     return report
 
+@app.post("/snapshots/force")
+async def force_snapshot():
+    asyncio.create_task(collector.collect_and_prune())
+    return {"status": "collection triggered"}
+
 @app.get("/wakeup")
 async def wakeup():
     return {"status": "awake", "message": "This server is awake."}
