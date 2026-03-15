@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import re
 from datetime import datetime
 from github import Github, InputFileContent
 
@@ -87,13 +88,13 @@ class MonitorCollector:
         # pull recent PRs (open + last 50)
         pulls = repo.get_pulls(state='open', sort='updated', direction='desc')
         for pr in pulls[:50]:
-            snapshot['prs'].append(self._compact_pr(pr))
+            snapshot['prs'].append(self._detailed_pr(pr))
         # issues (open recent)
         issues = repo.get_issues(state='open', sort='updated', direction='desc')
         for issue in issues[:50]:
             if issue.pull_request:
                 continue
-            snapshot['issues'].append(self._compact_issue(issue))
+            snapshot['issues'].append(self._detailed_issue(issue))
         # recent commits on default branch
         commits = repo.get_commits(sha=repo.default_branch)
         for c in commits[:20]:
@@ -105,24 +106,33 @@ class MonitorCollector:
             })
         return snapshot
 
-    def _compact_pr(self, pr):
-        # minimal useful fields
+    def _detailed_pr(self, pr):
+        issue_comments = self._collect_comments(pr.get_issue_comments())
+        review_comments = self._collect_comments(pr.get_comments())
+        timeline = self._collect_timeline(pr.as_issue())
+
         return {
             'number': pr.number,
             'title': pr.title,
+            'body': pr.body or "",
             'user': pr.user.login if pr.user else None,
             'created_at': pr.created_at.isoformat() if pr.created_at else None,
             'updated_at': pr.updated_at.isoformat() if pr.updated_at else None,
             'merged': pr.is_merged(),
             'merged_at': pr.merged_at.isoformat() if pr.merged_at else None,
+            'state': pr.state,
             'mergeable_state': pr.mergeable_state,
             'labels': [l.name for l in pr.labels],
             'requested_reviewers': [r.login for r in pr.get_review_requests()[0]],
             'assignees': [a.login for a in pr.assignees],
             'comments_count': pr.comments,
             'review_comments_count': pr.review_comments,
-            'last_comment_excerpt': self._last_comment_excerpt_pr(pr),
-            'commits_count': pr.commits
+            'issue_comments': issue_comments,
+            'review_comments': review_comments,
+            'timeline': timeline,
+            'linked_issue_numbers': self._extract_issue_numbers_from_text(pr.body or ""),
+            'commits_count': pr.commits,
+            'html_url': pr.html_url,
         }
 
     def _last_comment_excerpt_pr(self, pr):
@@ -136,17 +146,91 @@ class MonitorCollector:
         except Exception:
             return None
 
-    def _compact_issue(self, issue):
+    def _detailed_issue(self, issue):
+        comments = self._collect_comments(issue.get_comments())
+        timeline = self._collect_timeline(issue)
+
         return {
             'number': issue.number,
             'title': issue.title,
+            'body': issue.body or "",
             'user': issue.user.login if issue.user else None,
             'created_at': issue.created_at.isoformat() if issue.created_at else None,
             'updated_at': issue.updated_at.isoformat() if issue.updated_at else None,
+            'state': issue.state,
             'labels': [l.name for l in issue.labels],
             'comments_count': issue.comments,
-            'last_comment_excerpt': self._last_comment_excerpt_issue(issue)
+            'comments': comments,
+            'timeline': timeline,
+            'related_prs': self._extract_related_prs_from_timeline(timeline),
+            'html_url': issue.html_url,
         }
+
+    def _collect_comments(self, comments):
+        items = []
+        try:
+            for comment in comments:
+                items.append({
+                    'id': comment.id,
+                    'user': comment.user.login if comment.user else None,
+                    'created_at': comment.created_at.isoformat() if comment.created_at else None,
+                    'updated_at': comment.updated_at.isoformat() if comment.updated_at else None,
+                    'body': comment.body or "",
+                    'html_url': comment.html_url,
+                })
+        except Exception:
+            return []
+        return items
+
+    def _collect_timeline(self, issue_like):
+        items = []
+        try:
+            for event in issue_like.get_timeline():
+                items.append({
+                    'event': getattr(event, 'event', None),
+                    'actor': event.actor.login if getattr(event, 'actor', None) else None,
+                    'created_at': event.created_at.isoformat() if getattr(event, 'created_at', None) else None,
+                    'label': event.label.name if getattr(event, 'label', None) else None,
+                    'milestone': event.milestone.title if getattr(event, 'milestone', None) else None,
+                    'assignee': event.assignee.login if getattr(event, 'assignee', None) else None,
+                    'commit_id': getattr(event, 'commit_id', None),
+                    'source': self._timeline_source(event),
+                })
+        except Exception:
+            return []
+        return items
+
+    def _timeline_source(self, event):
+        source = getattr(event, 'source', None)
+        if not source:
+            return None
+        issue = getattr(source, 'issue', None)
+        if not issue:
+            return None
+        return {
+            'number': getattr(issue, 'number', None),
+            'title': getattr(issue, 'title', None),
+            'state': getattr(issue, 'state', None),
+            'html_url': getattr(issue, 'html_url', None),
+            'is_pull_request': bool(getattr(issue, 'pull_request', None)),
+        }
+
+    def _extract_related_prs_from_timeline(self, timeline):
+        related_prs = {}
+        for event in timeline:
+            source = event.get('source') or {}
+            if source.get('is_pull_request') and source.get('number') is not None:
+                related_prs[source['number']] = {
+                    'number': source.get('number'),
+                    'title': source.get('title'),
+                    'state': source.get('state'),
+                    'html_url': source.get('html_url'),
+                }
+        return sorted(related_prs.values(), key=lambda p: p.get('number') or 0)
+
+    def _extract_issue_numbers_from_text(self, text):
+        issue_numbers = {int(n) for n in re.findall(r'#(\d+)', text or "")}
+        return sorted(issue_numbers)
 
     def _last_comment_excerpt_issue(self, issue):
         try:
@@ -159,27 +243,51 @@ class MonitorCollector:
             return None
 
     def summarize_snapshot(self, snap):
-        # produce compact report similar to earlier memory reports
+        # issue-first report intended for actionable contribution analysis
         report = {
             'fetched_at': snap.get('fetched_at'),
             'repo': snap.get('repo'),
+            'focus': 'issues',
+            'top_issues': [],
             'top_prs': [],
-            'top_issues': []
+            'issue_focus_summary': {}
         }
-        # top PRs by updated_at
-        prs = sorted(snap.get('prs', []), key=lambda p: p.get('updated_at') or '', reverse=True)[:10]
+
+        issues = sorted(snap.get('issues', []), key=lambda i: i.get('updated_at') or '', reverse=True)
+        prs = sorted(snap.get('prs', []), key=lambda p: p.get('updated_at') or '', reverse=True)
+
+        top_issues = issues[:20]
+        top_prs = prs[:5]
+
+        report['top_issues'] = top_issues
         for p in prs:
+            if len(report['top_prs']) >= 5:
+                break
             report['top_prs'].append({
                 'number': p['number'],
                 'title': p['title'],
+                'body': p.get('body', ''),
                 'user': p['user'],
                 'updated_at': p['updated_at'],
+                'state': p.get('state'),
                 'mergeable_state': p['mergeable_state'],
                 'labels': p['labels'],
+                'linked_issue_numbers': p.get('linked_issue_numbers', []),
                 'comments_count': p['comments_count'],
-                'last_comment_excerpt': p['last_comment_excerpt']
+                'review_comments_count': p.get('review_comments_count', 0),
+                'issue_comments': p.get('issue_comments', []),
+                'review_comments': p.get('review_comments', []),
+                'timeline': p.get('timeline', []),
+                'html_url': p.get('html_url'),
             })
-        issues = sorted(snap.get('issues', []), key=lambda i: i.get('updated_at') or '', reverse=True)[:10]
-        for it in issues:
-            report['top_issues'].append(it)
+
+        report['issue_focus_summary'] = {
+            'issues_in_snapshot': len(issues),
+            'prs_in_snapshot': len(prs),
+            'reported_issues': len(top_issues),
+            'reported_prs': len(report['top_prs']),
+            'issues_with_related_prs': sum(1 for i in top_issues if i.get('related_prs')),
+            'issues_without_related_prs': sum(1 for i in top_issues if not i.get('related_prs')),
+        }
+
         return report
