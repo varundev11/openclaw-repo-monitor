@@ -3,6 +3,7 @@ import json
 import asyncio
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from github import Github, InputFileContent
 
 class MonitorCollector:
@@ -74,7 +75,7 @@ class MonitorCollector:
     def collect_snapshot(self):
         repo = self.gh.get_repo(f"{self.owner}/{self.repo}")
         snapshot = {
-            "fetched_at": datetime.utcnow().isoformat() + "Z",
+            "fetched_at": datetime.now(ZoneInfo("Asia/Kolkata")).isoformat(),
             "repo": {
                 "full_name": repo.full_name,
                 "default_branch": repo.default_branch,
