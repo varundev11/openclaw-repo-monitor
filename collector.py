@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import re
+from urllib.request import urlopen
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from github import Github, InputFileContent
@@ -41,8 +42,15 @@ class MonitorCollector:
         files = self.list_snapshots()
         if not files:
             return None
-        content = self.gist.files[files[0]].content
-        return json.loads(content)
+        for filename in files:
+            content = self._get_gist_file_content(filename)
+            if not content:
+                continue
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                continue
+        return None
 
     async def schedule_loop(self, interval_minutes: int = 30):
         while True:
@@ -56,21 +64,59 @@ class MonitorCollector:
         async with self._lock:
             ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             snap = self.collect_snapshot()
-            # update gist with new snapshot, keep latest 3
-            current_files = dict(self.gist.files)
+            # update gist with new snapshot and keep latest 3 snapshots total
             new_filename = f"snapshot_{ts}.json"
             new_files = {new_filename: InputFileContent(json.dumps(snap, indent=2))}
-            # add existing latest 2
-            existing_snapshots = sorted([f for f in current_files.keys() if f.startswith("snapshot_") and f.endswith(".json")], reverse=True)
-            for f in existing_snapshots[:2]:
-                new_files[f] = InputFileContent(current_files[f].content)
+
+            existing_snapshots = sorted(
+                [f for f in self.gist.files.keys() if f.startswith("snapshot_") and f.endswith(".json")],
+                reverse=True,
+            )
+
+            # delete older snapshots beyond latest 2 existing (new one makes total 3)
+            for f in existing_snapshots[2:]:
+                new_files[f] = None
+
             self.gist.edit(files=new_files)
 
     def get_snapshot_content(self, ts: str):
         filename = f"snapshot_{ts}.json"
-        if filename not in self.gist.files:
+        return self._get_gist_file_content(filename)
+
+    def _get_gist_file_content(self, filename: str):
+        gist_file = self.gist.files.get(filename)
+        if not gist_file:
             return None
-        return self.gist.files[filename].content
+
+        if gist_file.content:
+            return gist_file.content
+
+        raw_url = getattr(gist_file, "raw_url", None)
+        if raw_url:
+            try:
+                with urlopen(raw_url, timeout=20) as response:
+                    return response.read().decode("utf-8")
+            except Exception:
+                pass
+
+        try:
+            refreshed = self.gh.get_gist(self.gist.id)
+            self.gist = refreshed
+            refreshed_file = refreshed.files.get(filename)
+            if not refreshed_file:
+                return None
+
+            if refreshed_file.content:
+                return refreshed_file.content
+
+            refreshed_raw_url = getattr(refreshed_file, "raw_url", None)
+            if refreshed_raw_url:
+                with urlopen(refreshed_raw_url, timeout=20) as response:
+                    return response.read().decode("utf-8")
+        except Exception:
+            return None
+
+        return None
 
     def collect_snapshot(self):
         repo = self.gh.get_repo(f"{self.owner}/{self.repo}")

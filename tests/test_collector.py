@@ -59,3 +59,25 @@ def test_summarize_snapshot_prioritizes_issues():
     assert report["issue_focus_summary"]["reported_issues"] == 12
     assert report["issue_focus_summary"]["reported_prs"] == 5
     assert report["issue_focus_summary"]["issues_with_related_prs"] == 6
+
+
+def test_load_latest_skips_empty_or_invalid_snapshot():
+    collector = MonitorCollector.__new__(MonitorCollector)
+
+    class DummyGist:
+        files = {
+            "snapshot_20260315T180000Z.json": object(),
+            "snapshot_20260315T170000Z.json": object(),
+        }
+
+    collector.gist = DummyGist()
+
+    contents = {
+        "snapshot_20260315T180000Z.json": "",
+        "snapshot_20260315T170000Z.json": '{"ok": true}',
+    }
+
+    collector._get_gist_file_content = lambda filename: contents.get(filename)
+
+    snap = collector.load_latest()
+    assert snap == {"ok": True}
