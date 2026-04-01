@@ -14,8 +14,13 @@ class MonitorCollector:
         token = os.getenv("GIST_TOKEN")
         self.gh = Github(token) if token else Github()
         self.gist_description = "openclaw-repo-monitor snapshots"
-        self.gist = self._get_or_create_gist()
+        self.gist = None
         self._lock = asyncio.Lock()
+
+    def _ensure_gist(self):
+        if self.gist is None:
+            self.gist = self._get_or_create_gist()
+        return self.gist
 
     def _get_or_create_gist(self):
         token = os.getenv("GIST_TOKEN")
@@ -34,7 +39,8 @@ class MonitorCollector:
         )
 
     def list_snapshots(self):
-        files = [f for f in self.gist.files.keys() if f.startswith("snapshot_") and f.endswith(".json")]
+        gist = self._ensure_gist()
+        files = [f for f in gist.files.keys() if f.startswith("snapshot_") and f.endswith(".json")]
         files.sort(reverse=True)
         return files
 
@@ -62,29 +68,34 @@ class MonitorCollector:
 
     async def collect_and_prune(self):
         async with self._lock:
-            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-            snap = self.collect_snapshot()
-            # update gist with new snapshot and keep latest 3 snapshots total
-            new_filename = f"snapshot_{ts}.json"
-            new_files = {new_filename: InputFileContent(json.dumps(snap, indent=2))}
+            await asyncio.to_thread(self._collect_and_prune_sync)
 
-            existing_snapshots = sorted(
-                [f for f in self.gist.files.keys() if f.startswith("snapshot_") and f.endswith(".json")],
-                reverse=True,
-            )
+    def _collect_and_prune_sync(self):
+        gist = self._ensure_gist()
+        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        snap = self.collect_snapshot()
+        # update gist with new snapshot and keep latest 3 snapshots total
+        new_filename = f"snapshot_{ts}.json"
+        new_files = {new_filename: InputFileContent(json.dumps(snap, indent=2))}
 
-            # delete older snapshots beyond latest 2 existing (new one makes total 3)
-            for f in existing_snapshots[2:]:
-                new_files[f] = None
+        existing_snapshots = sorted(
+            [f for f in gist.files.keys() if f.startswith("snapshot_") and f.endswith(".json")],
+            reverse=True,
+        )
 
-            self.gist.edit(files=new_files)
+        # delete older snapshots beyond latest 2 existing (new one makes total 3)
+        for f in existing_snapshots[2:]:
+            new_files[f] = None
+
+        gist.edit(files=new_files)
 
     def get_snapshot_content(self, ts: str):
         filename = f"snapshot_{ts}.json"
         return self._get_gist_file_content(filename)
 
     def _get_gist_file_content(self, filename: str):
-        gist_file = self.gist.files.get(filename)
+        gist = self._ensure_gist()
+        gist_file = gist.files.get(filename)
         if not gist_file:
             return None
 
@@ -100,7 +111,7 @@ class MonitorCollector:
                 pass
 
         try:
-            refreshed = self.gh.get_gist(self.gist.id)
+            refreshed = self.gh.get_gist(gist.id)
             self.gist = refreshed
             refreshed_file = refreshed.files.get(filename)
             if not refreshed_file:
