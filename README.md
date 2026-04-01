@@ -9,6 +9,7 @@ Features
   - GET /snapshots
   - GET /snapshots/{ts}
   - GET /report/latest
+   - GET /robots.txt
   - GET /wakeup
   - HEAD /wakeup
 - Local CLI to force snapshot or run analysis

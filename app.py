@@ -1,8 +1,10 @@
 import os
 import asyncio
 import json
+from pathlib import Path
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from dotenv import load_dotenv
 from collector import MonitorCollector
 
@@ -10,6 +12,7 @@ load_dotenv()
 
 app = FastAPI(title="openclaw-repo-monitor")
 collector = MonitorCollector()
+ROBOTS_TXT_PATH = Path(__file__).with_name("robots.txt")
 
 @app.on_event("startup")
 async def startup_event():
@@ -44,6 +47,10 @@ async def force_snapshot():
 @app.get("/wakeup")
 async def wakeup():
     return {"status": "awake", "message": "This server is awake."}
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+def robots_txt():
+    return ROBOTS_TXT_PATH.read_text(encoding="utf-8")
 
 @app.head("/wakeup")
 async def wakeup_head():
